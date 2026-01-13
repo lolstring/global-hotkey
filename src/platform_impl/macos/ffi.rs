@@ -280,6 +280,7 @@ pub const kVK_Control: u16 = 0x3B;
 pub const kVK_RightShift: u16 = 0x3C;
 pub const kVK_RightOption: u16 = 0x3D;
 pub const kVK_RightControl: u16 = 0x3E;
+pub const kVK_Function: u16 = 0x3F;
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {

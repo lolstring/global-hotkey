@@ -11,6 +11,50 @@ global_hotkey lets you register Global HotKeys for Desktop Applications.
 - On Windows a win32 event loop must be running on the thread. It doesn't need to be the main thread but you have to create the global hotkey manager on the same thread as the event loop.
 - On macOS, an event loop must be running on the main thread so you also need to create the global hotkey manager on the main thread.
 
+## Modifier Keys as Standalone Hotkeys
+
+You can register individual modifier keys (e.g., `ControlLeft`, `ShiftRight`) as standalone hotkeys:
+
+```rs
+use global_hotkey::{GlobalHotKeyManager, hotkey::{HotKey, Code}};
+
+let manager = GlobalHotKeyManager::new().unwrap();
+
+// Register left Control key as a standalone hotkey
+let hotkey = HotKey::new(None, Code::ControlLeft);
+manager.register(hotkey).unwrap();
+
+// Register right Shift key
+let hotkey = HotKey::new(None, Code::ShiftRight);
+manager.register(hotkey).unwrap();
+```
+
+### Left/Right Specific Modifiers
+
+You can also use left/right specific modifiers in combinations:
+
+```rs
+use global_hotkey::{GlobalHotKeyManager, hotkey::{HotKey, Modifiers, Code}};
+
+let manager = GlobalHotKeyManager::new().unwrap();
+
+// Only triggers when RIGHT Control + A is pressed
+let hotkey = HotKey::new(Some(Modifiers::CONTROL_RIGHT), Code::KeyA);
+manager.register(hotkey).unwrap();
+
+// Only triggers when LEFT Shift + Space is pressed
+let hotkey = HotKey::new(Some(Modifiers::SHIFT_LEFT), Code::Space);
+manager.register(hotkey).unwrap();
+```
+
+Available specific modifiers: `SHIFT_LEFT`, `SHIFT_RIGHT`, `CONTROL_LEFT`, `CONTROL_RIGHT`, `ALT_LEFT`, `ALT_RIGHT`, `SUPER_LEFT`, `SUPER_RIGHT`, `FN`(Mac Keyboard).
+
+### macOS Permissions
+
+On macOS, registering standalone modifier keys requires **Accessibility permissions**. The app must be granted access in **System Preferences > Security & Privacy > Privacy > Accessibility**.
+
+If accessibility permissions are not granted, the library will attempt to fall back to the standard hotkey registration mechanism, which may have limited functionality for modifier-only hotkeys.
+
 ## Example
 
 ```rs

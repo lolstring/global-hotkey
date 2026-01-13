@@ -28,7 +28,7 @@ use self::ffi::{
     InstallEventHandler, OSStatus, RegisterEventHotKey, RemoveEventHandler, UnregisterEventHotKey,
     CGEventSourceKeyState, kCGEventSourceStateCombinedSessionState, kCGEventSourceStateHIDSystemState,
     kVK_Command, kVK_Shift, kVK_CapsLock, kVK_Option, kVK_Control, kVK_RightShift, kVK_RightOption,
-    kVK_RightControl, kVK_RightCommand, CGEventGetFlags, CGEventGetIntegerValueField,
+    kVK_RightControl, kVK_RightCommand, kVK_Function, CGEventGetFlags, CGEventGetIntegerValueField,
     kCGKeyboardEventKeycode, kCGEventFlagMaskShift, kCGEventFlagMaskControl,
     kCGEventFlagMaskAlternate, kCGEventFlagMaskCommand,
 };
@@ -475,6 +475,7 @@ unsafe extern "C" fn media_key_event_callback(
             0x3D => Code::AltRight,
             0x37 => Code::MetaLeft,
             0x36 => Code::MetaRight,
+            0x3F => Code::Fn,
             _ => return event,
         };
         
@@ -738,5 +739,6 @@ fn requires_event_tap(code: Code) -> bool {
             | Code::AltRight
             | Code::MetaLeft
             | Code::MetaRight
+            | Code::Fn
     )
 }

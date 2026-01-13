@@ -35,13 +35,14 @@ fn new() -> (Example, Task<Message>) {
         // Individual Modifier Keys (as triggers)
         ("Control Left", HotKey::new(None, Code::ControlLeft)),
         ("Control Right", HotKey::new(None, Code::ControlRight)),
-        ("Shift Left", HotKey::new(None, Code::ShiftLeft)),
+        // ("Shift Left", HotKey::new(None, Code::ShiftLeft)),
         ("Shift Right", HotKey::new(None, Code::ShiftRight)),
         ("Alt Left", HotKey::new(None, Code::AltLeft)),
         ("Alt Right", HotKey::new(None, Code::AltRight)),
-        ("Meta Left", HotKey::new(None, Code::MetaLeft)),
+        // ("Meta Left", HotKey::new(None, Code::MetaLeft)),
         ("Meta Right", HotKey::new(None, Code::MetaRight)),
-        
+        ("Fn", HotKey::new(None, Code::Fn)),
+
         // Simple Combinations
         ("Control + A", HotKey::new(Some(Modifiers::CONTROL), Code::KeyA)),
         ("Shift + B", HotKey::new(Some(Modifiers::SHIFT), Code::KeyB)),
@@ -54,6 +55,9 @@ fn new() -> (Example, Task<Message>) {
         
         // Complex Combinations
         ("Control + Shift + Enter", HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Enter)),
+        ("String Key + MetaLeft", "MetaLeft".parse().unwrap()),
+        ("String + ShiftLeft", "ShiftLeft".parse().unwrap()),
+        // ("String + Function", "Fn".parse().unwrap()),
     ];
 
     println!("Registering hotkeys...");

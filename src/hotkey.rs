@@ -464,6 +464,7 @@ fn parse_key(key: &str) -> Result<Code, HotKeyParseError> {
         "META" | "COMMAND" | "CMD" | "SUPER" => Ok(MetaLeft),
         "METALEFT" | "COMMANDLEFT" | "CMDLEFT" | "SUPERLEFT" => Ok(MetaLeft),
         "METARIGHT" | "COMMANDRIGHT" | "CMDRIGHT" | "SUPERRIGHT" => Ok(MetaRight),
+        "FN" | "FUNCTION" => Ok(Fn),
 
         _ => Err(HotKeyParseError::UnsupportedKey(key.to_string())),
     }
@@ -712,6 +713,15 @@ fn test_parse_hotkey() {
         HotKey {
             mods: Modifiers::CONTROL_RIGHT | Modifiers::SHIFT_LEFT,
             key: Code::ArrowUp,
+            id: 0,
+        }
+    );
+
+    assert_parse_hotkey!(
+        "Fn",
+        HotKey {
+            mods: Modifiers::empty(),
+            key: Code::Fn,
             id: 0,
         }
     );
