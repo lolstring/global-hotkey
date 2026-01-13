@@ -1,8 +1,9 @@
-use keyboard_types::{Code, Modifiers};
+use crate::hotkey::Modifiers;
+use keyboard_types::Code;
 use objc2::{msg_send, rc::Retained, ClassType};
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventSubtype, NSEventType};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     ffi::c_void,
     ptr,
     sync::{Arc, Mutex},
@@ -25,16 +26,22 @@ use self::ffi::{
     CFRunLoopSourceRef, EventHandlerCallRef, EventHandlerRef, EventHotKeyID, EventHotKeyRef,
     EventRef, EventTypeSpec, GetApplicationEventTarget, GetEventKind, GetEventParameter,
     InstallEventHandler, OSStatus, RegisterEventHotKey, RemoveEventHandler, UnregisterEventHotKey,
+    CGEventSourceKeyState, kCGEventSourceStateCombinedSessionState, kCGEventSourceStateHIDSystemState, kVK_Command, kVK_Shift,
+    kVK_CapsLock, kVK_Option, kVK_Control, kVK_RightShift, kVK_RightOption, kVK_RightControl,
+    kVK_RightCommand, CGEventGetFlags, CGEventGetIntegerValueField, kCGKeyboardEventKeycode,
+    kCGEventFlagMaskShift, kCGEventFlagMaskControl, kCGEventFlagMaskAlternate, kCGEventFlagMaskCommand,
 };
 
 mod ffi;
+
+type MediaState = (HashSet<HotKey>, HashMap<u16, bool>);
 
 pub struct GlobalHotKeyManager {
     event_handler_ptr: EventHandlerRef,
     hotkeys: Mutex<BTreeMap<u32, HotKeyWrapper>>,
     event_tap: Mutex<Option<CFMachPortRef>>,
     event_tap_source: Mutex<Option<CFRunLoopSourceRef>>,
-    media_hotkeys: Arc<Mutex<HashSet<HotKey>>>,
+    media_state: Arc<Mutex<MediaState>>,
 }
 
 unsafe impl Send for GlobalHotKeyManager {}
@@ -76,26 +83,27 @@ impl GlobalHotKeyManager {
             hotkeys: Mutex::new(BTreeMap::new()),
             event_tap: Mutex::new(None),
             event_tap_source: Mutex::new(None),
-            media_hotkeys: Arc::new(Mutex::new(HashSet::new())),
+            media_state: Arc::new(Mutex::new((HashSet::new(), HashMap::new()))),
         })
     }
 
     pub fn register(&self, hotkey: HotKey) -> crate::Result<()> {
         let mut mods: u32 = 0;
-        if hotkey.mods.contains(Modifiers::SHIFT) {
+        if hotkey.mods.intersects(Modifiers::SHIFT | Modifiers::SHIFT_LEFT | Modifiers::SHIFT_RIGHT) {
             mods |= 512;
         }
-        if hotkey.mods.intersects(Modifiers::SUPER | Modifiers::META) {
+        if hotkey.mods.intersects(Modifiers::SUPER | Modifiers::SUPER_LEFT | Modifiers::SUPER_RIGHT | Modifiers::META) {
             mods |= 256;
         }
-        if hotkey.mods.contains(Modifiers::ALT) {
+        if hotkey.mods.intersects(Modifiers::ALT | Modifiers::ALT_LEFT | Modifiers::ALT_RIGHT) {
             mods |= 2048;
         }
-        if hotkey.mods.contains(Modifiers::CONTROL) {
+        if hotkey.mods.intersects(Modifiers::CONTROL | Modifiers::CONTROL_LEFT | Modifiers::CONTROL_RIGHT) {
             mods |= 4096;
         }
 
         if let Some(scan_code) = key_to_scancode(hotkey.key) {
+            
             let hotkey_id = EventHotKeyID {
                 id: hotkey.id(),
                 signature: {
@@ -139,12 +147,66 @@ impl GlobalHotKeyManager {
             Ok(())
         } else if is_media_key(hotkey.key) {
             {
-                let mut media_hotkeys = self.media_hotkeys.lock().unwrap();
-                if !media_hotkeys.insert(hotkey) {
+                let mut media_state = self.media_state.lock().unwrap();
+                if !media_state.0.insert(hotkey) {
                     return Err(crate::Error::AlreadyRegistered(hotkey));
                 }
             }
-            self.start_watching_media_keys()
+            if let Err(e) = self.start_watching_media_keys() {
+                 let fallback_scancode = match hotkey.key {
+                    Code::ControlLeft => Some(kVK_Control as u32),
+                    Code::ControlRight => Some(kVK_RightControl as u32),
+                    Code::ShiftLeft => Some(kVK_Shift as u32),
+                    Code::ShiftRight => Some(kVK_RightShift as u32),
+                    Code::AltLeft => Some(kVK_Option as u32),
+                    Code::AltRight => Some(kVK_RightOption as u32),
+                    Code::MetaLeft => Some(kVK_Command as u32),
+                    Code::MetaRight => Some(kVK_RightCommand as u32),
+                    _ => None,
+                };
+                
+                if let Some(scan_code) = fallback_scancode {
+                     self.media_state.lock().unwrap().0.remove(&hotkey);
+                     
+                     let hotkey_id = EventHotKeyID {
+                        id: hotkey.id(),
+                        signature: {
+                            let mut res: u32 = 0;
+                            for c in "htrs".chars() {
+                                res = (res << 8) + c as u32;
+                            }
+                            res
+                        },
+                    };
+        
+                    let ptr = unsafe {
+                        let mut hotkey_ref: EventHotKeyRef = std::mem::zeroed();
+                        let result = RegisterEventHotKey(
+                            scan_code,
+                            mods,
+                            hotkey_id,
+                            GetApplicationEventTarget(),
+                            0,
+                            &mut hotkey_ref,
+                        );
+        
+                        if result != noErr as _ {
+                            return Err(e);
+                        }
+        
+                        hotkey_ref
+                    };
+        
+                    self.hotkeys
+                        .lock()
+                        .unwrap()
+                        .insert(hotkey.id(), HotKeyWrapper { ptr, hotkey });
+                    return Ok(());
+                }
+                
+                return Err(e);
+            }
+            Ok(())
         } else {
             Err(crate::Error::FailedToRegister(format!(
                 "Unknown scancode for {}",
@@ -155,9 +217,9 @@ impl GlobalHotKeyManager {
 
     pub fn unregister(&self, hotkey: HotKey) -> crate::Result<()> {
         if is_media_key(hotkey.key) {
-            let mut media_hotkey = self.media_hotkeys.lock().unwrap();
-            media_hotkey.remove(&hotkey);
-            if media_hotkey.is_empty() {
+            let mut media_state = self.media_state.lock().unwrap();
+            media_state.0.remove(&hotkey);
+            if media_state.0.is_empty() {
                 self.stop_watching_media_keys();
             }
         } else if let Some(hotkeywrapper) = self.hotkeys.lock().unwrap().remove(&hotkey.id()) {
@@ -202,14 +264,15 @@ impl GlobalHotKeyManager {
         }
 
         unsafe {
-            let event_mask: CGEventMask = CGEventMaskBit!(CGEventType::SystemDefined);
+            let event_mask: CGEventMask = CGEventMaskBit!(CGEventType::SystemDefined)
+                | CGEventMaskBit!(CGEventType::FlagsChanged);
             let tap = CGEventTapCreate(
                 CGEventTapLocation::Session,
                 CGEventTapPlacement::HeadInsertEventTap,
                 CGEventTapOptions::Default,
                 event_mask,
                 media_key_event_callback,
-                Arc::into_raw(self.media_hotkeys.clone()) as *const c_void,
+                Arc::into_raw(self.media_state.clone()) as *const c_void,
             );
             if tap.is_null() {
                 return Err(crate::Error::FailedToWatchMediaKeyEvent);
@@ -300,6 +363,53 @@ impl Drop for GlobalHotKeyManager {
     }
 }
 
+unsafe fn modifiers_match(mods: u32) -> bool {
+    let mods = Modifiers::from_bits_truncate(mods);
+
+    if mods.contains(Modifiers::SHIFT_LEFT)
+        && !CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_Shift)
+    {
+        return false;
+    }
+    if mods.contains(Modifiers::SHIFT_RIGHT)
+        && !CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_RightShift)
+    {
+        return false;
+    }
+    if mods.contains(Modifiers::CONTROL_LEFT)
+        && !CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_Control)
+    {
+        return false;
+    }
+    if mods.contains(Modifiers::CONTROL_RIGHT)
+        && !CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_RightControl)
+    {
+        return false;
+    }
+    if mods.contains(Modifiers::ALT_LEFT)
+        && !CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_Option)
+    {
+        return false;
+    }
+    if mods.contains(Modifiers::ALT_RIGHT)
+        && !CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_RightOption)
+    {
+        return false;
+    }
+    if mods.contains(Modifiers::SUPER_LEFT)
+        && !CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_Command)
+    {
+        return false;
+    }
+    if mods.contains(Modifiers::SUPER_RIGHT)
+        && !CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_RightCommand)
+    {
+        return false;
+    }
+
+    true
+}
+
 unsafe extern "C" fn hotkey_handler(
     _next_handler: EventHandlerCallRef,
     event: EventRef,
@@ -318,6 +428,10 @@ unsafe extern "C" fn hotkey_handler(
     );
 
     if result == noErr as _ {
+        if !modifiers_match(event_hotkey.id >> 16) {
+            return noErr as _;
+        }
+
         let event_kind = GetEventKind(event);
         match event_kind {
             #[allow(non_upper_case_globals)]
@@ -343,8 +457,81 @@ unsafe extern "C" fn media_key_event_callback(
     event: CGEventRef,
     user_info: *const c_void,
 ) -> CGEventRef {
-    if ev_type != CGEventType::SystemDefined {
+    if ev_type != CGEventType::SystemDefined && ev_type != CGEventType::FlagsChanged {
         return event;
+    }
+
+    if ev_type == CGEventType::FlagsChanged {
+        let scancode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode) as u16;
+        let code = match scancode {
+            0x3B => Code::ControlLeft,
+            0x3E => Code::ControlRight,
+            0x38 => Code::ShiftLeft,
+            0x3C => Code::ShiftRight,
+            0x3A => Code::AltLeft,
+            0x3D => Code::AltRight,
+            0x37 => Code::MetaLeft,
+            0x36 => Code::MetaRight,
+            _ => return event,
+        };
+        
+        let flags = CGEventGetFlags(event);
+        let mut mods = Modifiers::empty();
+        if (flags & kCGEventFlagMaskShift) != 0 {
+            mods |= Modifiers::SHIFT;
+        }
+        if (flags & kCGEventFlagMaskControl) != 0 {
+            mods |= Modifiers::CONTROL;
+        }
+        if (flags & kCGEventFlagMaskAlternate) != 0 {
+            mods |= Modifiers::ALT;
+        }
+        if (flags & kCGEventFlagMaskCommand) != 0 {
+            mods |= Modifiers::META;
+        }
+        
+        match code {
+             Code::ShiftLeft | Code::ShiftRight => mods.remove(Modifiers::SHIFT),
+             Code::ControlLeft | Code::ControlRight => mods.remove(Modifiers::CONTROL),
+             Code::AltLeft | Code::AltRight => mods.remove(Modifiers::ALT),
+             Code::MetaLeft | Code::MetaRight => mods.remove(Modifiers::META),
+             _ => {}
+        }
+        
+        let hotkey = HotKey::new(Some(mods), code);
+        
+        let media_state_mutex = &*(user_info as *const Mutex<MediaState>);
+
+        let lock_result = media_state_mutex.lock();
+        if let Ok(mut guard) = lock_result {
+            if guard.0.contains(&hotkey) {
+                 let is_pressed_os = CGEventSourceKeyState(kCGEventSourceStateHIDSystemState, scancode);
+                 let was_pressed = *guard.1.get(&scancode).unwrap_or(&false);
+                 
+                 let is_pressed = if is_pressed_os {
+                        true
+                 } else {
+                        !was_pressed
+                 };
+                 
+                 guard.1.insert(scancode, is_pressed);
+                 
+                 if is_pressed != was_pressed {
+                    GlobalHotKeyEvent::send(GlobalHotKeyEvent {
+                        id: hotkey.id(),
+                        state: match is_pressed {
+                            true => crate::HotKeyState::Pressed,
+                            false => crate::HotKeyState::Released,
+                        },
+                    });
+                 }
+    
+                return event; 
+            }
+        }
+        
+        return event;
+
     }
 
     let ns_event: Retained<NSEvent> = msg_send![NSEvent::class(), eventWithCGEvent: event];
@@ -362,6 +549,7 @@ unsafe extern "C" fn media_key_event_callback(
 
         // Modifiers
         let flags = ns_event.modifierFlags();
+        let _event_number = ns_event.eventNumber();
         let mut mods = Modifiers::empty();
         if flags.contains(NSEventModifierFlags::Shift) {
             mods |= Modifiers::SHIFT;
@@ -513,7 +701,7 @@ pub fn key_to_scancode(code: Code) -> Option<u32> {
         Code::ArrowRight => Some(0x7c),
         Code::ArrowDown => Some(0x7d),
         Code::ArrowUp => Some(0x7e),
-        Code::CapsLock => Some(0x39),
+        Code::CapsLock => Some(kVK_CapsLock as u32),
         Code::PrintScreen => Some(0x46),
         _ => None,
     }
@@ -527,5 +715,13 @@ fn is_media_key(code: Code) -> bool {
             | Code::MediaTrackPrevious
             | Code::MediaFastForward
             | Code::MediaRewind
+            | Code::ControlLeft
+            | Code::ControlRight
+            | Code::ShiftLeft
+            | Code::ShiftRight
+            | Code::AltLeft
+            | Code::AltRight
+            | Code::MetaLeft
+            | Code::MetaRight
     )
 }

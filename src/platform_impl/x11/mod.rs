@@ -5,7 +5,8 @@
 use std::collections::BTreeMap;
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use keyboard_types::{Code, Modifiers};
+use crate::hotkey::Modifiers;
+use keyboard_types::Code;
 use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
 use x11rb::protocol::xproto::{ConnectionExt, GrabMode, KeyButMask, Keycode, ModMask, Window};
@@ -177,6 +178,7 @@ fn register_hotkey(
                 id: hotkey.id(),
                 mods,
                 pressed: false,
+                true_mods: hotkey.mods.bits(),
             };
             entry.push(state);
             Ok(())
@@ -222,6 +224,63 @@ struct HotKeyState {
     id: u32,
     pressed: bool,
     mods: ModMask,
+    // Store original rust modifiers to check specific flags
+    true_mods: u32,
+}
+
+
+fn modifiers_match(
+    conn: &RustConnection,
+    keymap: &[u8],
+    modifiers: Modifiers,
+) -> bool {
+    if modifiers.contains(Modifiers::SHIFT_LEFT)
+         && !is_key_pressed(conn, keymap, XK_Shift_L).unwrap_or(false)
+    {
+        return false;
+    }
+    if modifiers.contains(Modifiers::SHIFT_RIGHT)
+         && !is_key_pressed(conn, keymap, XK_Shift_R).unwrap_or(false)
+    {
+        return false;
+    }
+    if modifiers.contains(Modifiers::CONTROL_LEFT)
+         && !is_key_pressed(conn, keymap, XK_Control_L).unwrap_or(false)
+    {
+        return false;
+    }
+    if modifiers.contains(Modifiers::CONTROL_RIGHT)
+         && !is_key_pressed(conn, keymap, XK_Control_R).unwrap_or(false)
+    {
+        return false;
+    }
+    if modifiers.contains(Modifiers::ALT_LEFT)
+         && !is_key_pressed(conn, keymap, XK_Alt_L).unwrap_or(false)
+    {
+        return false;
+    }
+    if modifiers.contains(Modifiers::ALT_RIGHT)
+         && !is_key_pressed(conn, keymap, XK_Alt_R).unwrap_or(false)
+    {
+        return false;
+    }
+    if modifiers.contains(Modifiers::SUPER_LEFT)
+         && !is_key_pressed(conn, keymap, XK_Super_L).unwrap_or(false)
+    {
+        return false;
+    }
+    if modifiers.contains(Modifiers::SUPER_RIGHT)
+         && !is_key_pressed(conn, keymap, XK_Super_R).unwrap_or(false)
+    {
+        return false;
+    }
+    true
+}
+
+fn is_key_pressed(conn: &RustConnection, keymap: &[u8], keysym: u32) -> Option<bool> {
+    let keycode = keysym_to_keycode(conn, keysym).ok()??;
+    let byte = keymap.get((keycode / 8) as usize)?;
+    Some((byte & (1 << (keycode % 8))) != 0)
 }
 
 fn events_processor(thread_rx: Receiver<ThreadMessage>) -> Result<(), String> {
@@ -262,8 +321,14 @@ fn events_processor(thread_rx: Receiver<ThreadMessage>) -> Result<(), String> {
                     let event_mods = event.state & full_mask;
                     let event_mods = ModMask::from(event_mods.bits());
 
+                    let keymap = conn.query_keymap().map_err(|e| e.to_string())?.reply().map_err(|e| e.to_string())?.keys;
+
                     if let Some(entry) = hotkeys.get_mut(&keycode) {
                         for state in entry {
+                             let mods = Modifiers::from_bits_truncate(state.true_mods);
+                             if !modifiers_match(&conn, &keymap, mods) {
+                                  continue;
+                             }
                             if event_mods == state.mods && !state.pressed {
                                 GlobalHotKeyEvent::send(GlobalHotKeyEvent {
                                     id: state.id,
@@ -431,22 +496,30 @@ fn keycode_to_x11_keysym(key: Code) -> Option<RawKeysym> {
         Code::MediaTrackNext => xkeysym::key::XF86_AudioNext,
         Code::MediaTrackPrevious => xkeysym::key::XF86_AudioPrev,
         Code::Pause => xkeysym::key::Pause,
+        Code::ControlLeft => XK_Control_L,
+        Code::ControlRight => XK_Control_R,
+        Code::ShiftLeft => XK_Shift_L,
+        Code::ShiftRight => XK_Shift_R,
+        Code::AltLeft => XK_Alt_L,
+        Code::AltRight => XK_Alt_R,
+        Code::MetaLeft => XK_Super_L,
+        Code::MetaRight => XK_Super_R,
         _ => return None,
     })
 }
 
 fn modifiers_to_x11_mods(modifiers: Modifiers) -> ModMask {
     let mut x11mods = ModMask::default();
-    if modifiers.contains(Modifiers::SHIFT) {
+    if modifiers.intersects(Modifiers::SHIFT | Modifiers::SHIFT_LEFT | Modifiers::SHIFT_RIGHT) {
         x11mods |= ModMask::SHIFT;
     }
-    if modifiers.intersects(Modifiers::SUPER | Modifiers::META) {
+    if modifiers.intersects(Modifiers::SUPER | Modifiers::SUPER_LEFT | Modifiers::SUPER_RIGHT | Modifiers::META) {
         x11mods |= ModMask::M4;
     }
-    if modifiers.contains(Modifiers::ALT) {
+    if modifiers.intersects(Modifiers::ALT | Modifiers::ALT_LEFT | Modifiers::ALT_RIGHT) {
         x11mods |= ModMask::M1;
     }
-    if modifiers.contains(Modifiers::CONTROL) {
+    if modifiers.intersects(Modifiers::CONTROL | Modifiers::CONTROL_LEFT | Modifiers::CONTROL_RIGHT) {
         x11mods |= ModMask::CONTROL;
     }
     x11mods
@@ -474,3 +547,15 @@ fn keysym_to_keycode(conn: &RustConnection, keysym: RawKeysym) -> Result<Option<
 
     Ok(None)
 }
+
+/* Specific Modifiers */
+pub const XK_Control_L: u32 = 0xFFE3;
+pub const XK_Control_R: u32 = 0xFFE4;
+pub const XK_Shift_L: u32 = 0xFFE1;
+pub const XK_Shift_R: u32 = 0xFFE2;
+pub const XK_Alt_L: u32 = 0xFFE9;
+pub const XK_Alt_R: u32 = 0xFFEA;
+pub const XK_Meta_L: u32 = 0xFFE7;
+pub const XK_Meta_R: u32 = 0xFFE8;
+pub const XK_Super_L: u32 = 0xFFEB;
+pub const XK_Super_R: u32 = 0xFFEC;

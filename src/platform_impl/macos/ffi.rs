@@ -264,3 +264,40 @@ extern "C" {
     pub fn CFRunLoopRemoveSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFRunLoopMode);
     pub fn CFRelease(cftype: *const c_void);
 }
+
+/* Specific Modifiers Support */
+pub type CGEventSourceStateID = SInt32;
+pub type CGKeyCode = u16;
+pub const kCGEventSourceStateCombinedSessionState: CGEventSourceStateID = 0;
+pub const kCGEventSourceStateHIDSystemState: CGEventSourceStateID = 1;
+
+pub const kVK_RightCommand: u16 = 0x36;
+pub const kVK_Command: u16 = 0x37;
+pub const kVK_Shift: u16 = 0x38;
+pub const kVK_CapsLock: u16 = 0x39;
+pub const kVK_Option: u16 = 0x3A;
+pub const kVK_Control: u16 = 0x3B;
+pub const kVK_RightShift: u16 = 0x3C;
+pub const kVK_RightOption: u16 = 0x3D;
+pub const kVK_RightControl: u16 = 0x3E;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    pub fn CGEventSourceKeyState(stateID: CGEventSourceStateID, key: CGKeyCode) -> bool;
+    pub fn CGEventGetFlags(event: CGEventRef) -> CGEventFlags;
+    pub fn CGEventGetIntegerValueField(event: CGEventRef, field: CGEventField) -> i64;
+}
+
+pub type CGEventFlags = u64;
+pub type CGEventField = u32;
+
+pub const kCGKeyboardEventKeycode: CGEventField = 9;
+
+pub const kCGEventFlagMaskShift: CGEventFlags = 0x00020000;
+pub const kCGEventFlagMaskControl: CGEventFlags = 0x00040000;
+pub const kCGEventFlagMaskAlternate: CGEventFlags = 0x00080000;
+pub const kCGEventFlagMaskCommand: CGEventFlags = 0x00100000;
+pub const kCGEventFlagMaskSecondaryFn: CGEventFlags = 0x00800000; // e.g. arrow keys sometimes? No, Fn key.
+// Mask for numeric pad?
+pub const kCGEventFlagMaskNumericPad: CGEventFlags = 0x00200000;
+pub const kCGEventFlagMaskHelp: CGEventFlags = 0x00400000;

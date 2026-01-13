@@ -27,8 +27,29 @@
 //! ```
 //!
 
-pub use keyboard_types::{Code, Modifiers};
+pub use keyboard_types::Code;
 use std::{borrow::Borrow, fmt::Display, hash::Hash, str::FromStr};
+use bitflags::bitflags;
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct Modifiers: u32 {
+        const SHIFT = 1 << 0;
+        const CONTROL = 1 << 1;
+        const ALT = 1 << 2;
+        const SUPER = 1 << 3;
+        const META = 1 << 4;
+
+        const SHIFT_LEFT = 1 << 5;
+        const SHIFT_RIGHT = 1 << 6;
+        const CONTROL_LEFT = 1 << 7;
+        const CONTROL_RIGHT = 1 << 8;
+        const ALT_LEFT = 1 << 9;
+        const ALT_RIGHT = 1 << 10;
+        const SUPER_LEFT = 1 << 11;
+        const SUPER_RIGHT = 1 << 12;
+    }
+}
 
 #[cfg(target_os = "macos")]
 pub const CMD_OR_CTRL: Modifiers = Modifiers::SUPER;
@@ -107,7 +128,7 @@ impl HotKey {
     /// Returns `true` if this [`Code`] and [`Modifiers`] matches this hotkey.
     pub fn matches(&self, modifiers: impl Borrow<Modifiers>, key: impl Borrow<Code>) -> bool {
         // Should be a const but const bit_or doesn't work here.
-        let base_mods = Modifiers::SHIFT | Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER;
+        let base_mods = Modifiers::SHIFT | Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER | Modifiers::SHIFT_LEFT | Modifiers::SHIFT_RIGHT | Modifiers::CONTROL_LEFT | Modifiers::CONTROL_RIGHT | Modifiers::ALT_LEFT | Modifiers::ALT_RIGHT | Modifiers::SUPER_LEFT | Modifiers::SUPER_RIGHT;
         let modifiers = modifiers.borrow();
         let key = key.borrow();
         self.mods == *modifiers & base_mods && self.key == *key
@@ -119,14 +140,38 @@ impl HotKey {
         if self.mods.contains(Modifiers::SHIFT) {
             hotkey.push_str("shift+")
         }
+        if self.mods.contains(Modifiers::SHIFT_LEFT) {
+            hotkey.push_str("shiftleft+")
+        }
+        if self.mods.contains(Modifiers::SHIFT_RIGHT) {
+            hotkey.push_str("shiftright+")
+        }
         if self.mods.contains(Modifiers::CONTROL) {
             hotkey.push_str("control+")
+        }
+        if self.mods.contains(Modifiers::CONTROL_LEFT) {
+            hotkey.push_str("controlleft+")
+        }
+        if self.mods.contains(Modifiers::CONTROL_RIGHT) {
+            hotkey.push_str("controlright+")
         }
         if self.mods.contains(Modifiers::ALT) {
             hotkey.push_str("alt+")
         }
+        if self.mods.contains(Modifiers::ALT_LEFT) {
+            hotkey.push_str("altleft+")
+        }
+        if self.mods.contains(Modifiers::ALT_RIGHT) {
+            hotkey.push_str("altright+")
+        }
         if self.mods.contains(Modifiers::SUPER) {
             hotkey.push_str("super+")
+        }
+        if self.mods.contains(Modifiers::SUPER_LEFT) {
+            hotkey.push_str("superleft+")
+        }
+        if self.mods.contains(Modifiers::SUPER_RIGHT) {
+            hotkey.push_str("superright+")
         }
         hotkey.push_str(&self.key.to_string());
         hotkey
@@ -172,7 +217,6 @@ fn parse_hotkey(hotkey: &str) -> Result<HotKey, HotKeyParseError> {
     let mut key = None;
 
     match tokens.len() {
-        // single key hotkey
         1 => {
             key = Some(parse_key(tokens[0])?);
         }
@@ -199,14 +243,38 @@ fn parse_hotkey(hotkey: &str) -> Result<HotKey, HotKeyParseError> {
                     "OPTION" | "ALT" => {
                         mods |= Modifiers::ALT;
                     }
+                    "OPTIONLEFT" | "ALTLEFT" => {
+                        mods |= Modifiers::ALT_LEFT;
+                    }
+                    "OPTIONRIGHT" | "ALTRIGHT" => {
+                        mods |= Modifiers::ALT_RIGHT;
+                    }
                     "CONTROL" | "CTRL" => {
                         mods |= Modifiers::CONTROL;
+                    }
+                    "CONTROLLEFT" | "CTRLLEFT" => {
+                        mods |= Modifiers::CONTROL_LEFT;
+                    }
+                    "CONTROLRIGHT" | "CTRLRIGHT" => {
+                        mods |= Modifiers::CONTROL_RIGHT;
                     }
                     "COMMAND" | "CMD" | "SUPER" => {
                         mods |= Modifiers::SUPER;
                     }
+                    "COMMANDLEFT" | "CMDLEFT" | "SUPERLEFT" => {
+                        mods |= Modifiers::SUPER_LEFT;
+                    }
+                    "COMMANDRIGHT" | "CMDRIGHT" | "SUPERRIGHT" => {
+                        mods |= Modifiers::SUPER_RIGHT;
+                    }
                     "SHIFT" => {
                         mods |= Modifiers::SHIFT;
+                    }
+                    "SHIFTLEFT" => {
+                        mods |= Modifiers::SHIFT_LEFT;
+                    }
+                    "SHIFTRIGHT" => {
+                        mods |= Modifiers::SHIFT_RIGHT;
                     }
                     #[cfg(target_os = "macos")]
                     "COMMANDORCONTROL" | "COMMANDORCTRL" | "CMDORCTRL" | "CMDORCONTROL" => {
@@ -226,6 +294,20 @@ fn parse_hotkey(hotkey: &str) -> Result<HotKey, HotKeyParseError> {
 
     Ok(HotKey::new(
         Some(mods),
+        // If key is missing, it might be that the user provided *only* a modifier (e.g. "ControlRight").
+        // Since HotKey requires a Code, this is technically invalid unless we treat the modifier AS the key code??
+        // Wait, the prompt implies "ControlRight" should be valid on its own?
+        // "ControlRight + R" or just "ControlRight"
+        // If it is just "ControlRight", then it is BOTH a modifier AND a key?
+        // Or should we map "ControlRight" to `Code::ControlRight` (if it existed) with no modifiers?
+        // But `Code` doesn't have `ControlRight`. It has `Control`.
+        // Let's rely on standard `Code` enum.
+        
+        // Actually, the error happens because parsing flow assumes at least one non-modifier key.
+        // But for "CONTROLRIGHT", it matches a modifier case, so `key` remains `None`.
+        // Then `key.ok_or_else` fails.
+        // We probably don't support modifier-only hotkeys in this structure because `HotKey` struct enforces `key: Code`.
+    
         key.ok_or_else(|| HotKeyParseError::InvalidFormat(hotkey.to_string()))?,
     ))
 }
@@ -350,6 +432,18 @@ fn parse_key(key: &str) -> Result<Code, HotKeyParseError> {
         "F22" => Ok(F22),
         "F23" => Ok(F23),
         "F24" => Ok(F24),
+        "CONTROL" | "CTRL" => Ok(ControlLeft),
+        "CONTROLLEFT" | "CTRLLEFT" => Ok(ControlLeft),
+        "CONTROLRIGHT" | "CTRLRIGHT" => Ok(ControlRight),
+        "SHIFT" => Ok(ShiftLeft),
+        "SHIFTLEFT" => Ok(ShiftLeft),
+        "SHIFTRIGHT" => Ok(ShiftRight),
+        "ALT" | "OPTION" => Ok(AltLeft),
+        "ALTLEFT" | "OPTIONLEFT" => Ok(AltLeft),
+        "ALTRIGHT" | "OPTIONRIGHT" => Ok(AltRight),
+        "META" | "COMMAND" | "CMD" | "SUPER" => Ok(MetaLeft),
+        "METALEFT" | "COMMANDLEFT" | "CMDLEFT" | "SUPERLEFT" => Ok(MetaLeft),
+        "METARIGHT" | "COMMANDRIGHT" | "CMDRIGHT" | "SUPERRIGHT" => Ok(MetaRight),
 
         _ => Err(HotKeyParseError::UnsupportedKey(key.to_string())),
     }
@@ -472,4 +566,11 @@ fn test_equality() {
             && h4.id() == h5.id()
             && h5.id() != h6.id()
     );
+}
+
+#[test]
+fn test_reproduce_controlright() {
+    let s = "CONTROLRIGHT";
+    let h = s.parse::<HotKey>();
+    assert!(h.is_ok(), "Failed to parse CONTROLRIGHT: {:?}", h.err());
 }
