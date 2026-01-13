@@ -48,6 +48,8 @@ bitflags! {
         const ALT_RIGHT = 1 << 10;
         const SUPER_LEFT = 1 << 11;
         const SUPER_RIGHT = 1 << 12;
+        const META_LEFT = 1 << 13;
+        const META_RIGHT = 1 << 14;
     }
 }
 
@@ -104,12 +106,20 @@ impl serde::Serialize for HotKey {
 
 impl HotKey {
     /// Creates a new hotkey to define keyboard shortcuts throughout your application.
-    /// Only [`Modifiers::ALT`], [`Modifiers::SHIFT`], [`Modifiers::CONTROL`], and [`Modifiers::SUPER`]
+    /// Only [`Modifiers::ALT`], [`Modifiers::SHIFT`], [`Modifiers::CONTROL`] and [`Modifiers::SUPER`]/[`Modifiers::META`] (and their `_LEFT`/`_RIGHT` variants).
     pub fn new(mods: Option<Modifiers>, key: Code) -> Self {
         let mut mods = mods.unwrap_or_else(Modifiers::empty);
         if mods.contains(Modifiers::META) {
             mods.remove(Modifiers::META);
             mods.insert(Modifiers::SUPER);
+        }
+        if mods.contains(Modifiers::META_LEFT) {
+            mods.remove(Modifiers::META_LEFT);
+            mods.insert(Modifiers::SUPER_LEFT);
+        }
+        if mods.contains(Modifiers::META_RIGHT) {
+            mods.remove(Modifiers::META_RIGHT);
+            mods.insert(Modifiers::SUPER_RIGHT);
         }
 
         Self {
@@ -128,7 +138,7 @@ impl HotKey {
     /// Returns `true` if this [`Code`] and [`Modifiers`] matches this hotkey.
     pub fn matches(&self, modifiers: impl Borrow<Modifiers>, key: impl Borrow<Code>) -> bool {
         // Should be a const but const bit_or doesn't work here.
-        let base_mods = Modifiers::SHIFT | Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER | Modifiers::SHIFT_LEFT | Modifiers::SHIFT_RIGHT | Modifiers::CONTROL_LEFT | Modifiers::CONTROL_RIGHT | Modifiers::ALT_LEFT | Modifiers::ALT_RIGHT | Modifiers::SUPER_LEFT | Modifiers::SUPER_RIGHT;
+        let base_mods = Modifiers::SHIFT | Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER | Modifiers::META | Modifiers::SHIFT_LEFT | Modifiers::SHIFT_RIGHT | Modifiers::CONTROL_LEFT | Modifiers::CONTROL_RIGHT | Modifiers::ALT_LEFT | Modifiers::ALT_RIGHT | Modifiers::SUPER_LEFT | Modifiers::SUPER_RIGHT | Modifiers::META_LEFT | Modifiers::META_RIGHT;
         let modifiers = modifiers.borrow();
         let key = key.borrow();
         self.mods == *modifiers & base_mods && self.key == *key
@@ -266,6 +276,15 @@ fn parse_hotkey(hotkey: &str) -> Result<HotKey, HotKeyParseError> {
                     }
                     "COMMANDRIGHT" | "CMDRIGHT" | "SUPERRIGHT" => {
                         mods |= Modifiers::SUPER_RIGHT;
+                    }
+                    "META" => {
+                        mods |= Modifiers::META;
+                    }
+                    "METALEFT" => {
+                        mods |= Modifiers::META_LEFT;
+                    }
+                    "METARIGHT" => {
+                        mods |= Modifiers::META_RIGHT;
                     }
                     "SHIFT" => {
                         mods |= Modifiers::SHIFT;
@@ -547,6 +566,154 @@ fn test_parse_hotkey() {
     if HotKey::from_str("Shift+Ctrl").is_ok() {
         panic!("This is not a valid hotkey");
     }
+
+    // Test standalone modifier keys as the main key (e.g., for standalone modifier hotkeys)
+    assert_parse_hotkey!(
+        "ControlRight",
+        HotKey {
+            mods: Modifiers::empty(),
+            key: Code::ControlRight,
+            id: 0,
+        }
+    );
+
+    assert_parse_hotkey!(
+        "ControlLeft",
+        HotKey {
+            mods: Modifiers::empty(),
+            key: Code::ControlLeft,
+            id: 0,
+        }
+    );
+
+    assert_parse_hotkey!(
+        "ShiftLeft",
+        HotKey {
+            mods: Modifiers::empty(),
+            key: Code::ShiftLeft,
+            id: 0,
+        }
+    );
+
+    assert_parse_hotkey!(
+        "ShiftRight",
+        HotKey {
+            mods: Modifiers::empty(),
+            key: Code::ShiftRight,
+            id: 0,
+        }
+    );
+
+    assert_parse_hotkey!(
+        "AltLeft",
+        HotKey {
+            mods: Modifiers::empty(),
+            key: Code::AltLeft,
+            id: 0,
+        }
+    );
+
+    assert_parse_hotkey!(
+        "AltRight",
+        HotKey {
+            mods: Modifiers::empty(),
+            key: Code::AltRight,
+            id: 0,
+        }
+    );
+
+    assert_parse_hotkey!(
+        "MetaLeft",
+        HotKey {
+            mods: Modifiers::empty(),
+            key: Code::MetaLeft,
+            id: 0,
+        }
+    );
+
+    assert_parse_hotkey!(
+        "MetaRight",
+        HotKey {
+            mods: Modifiers::empty(),
+            key: Code::MetaRight,
+            id: 0,
+        }
+    );
+
+    // Test left/right modifiers with a key
+    assert_parse_hotkey!(
+        "ControlLeft+KeyA",
+        HotKey {
+            mods: Modifiers::CONTROL_LEFT,
+            key: Code::KeyA,
+            id: 0,
+        }
+    );
+
+    assert_parse_hotkey!(
+        "ControlRight+KeyA",
+        HotKey {
+            mods: Modifiers::CONTROL_RIGHT,
+            key: Code::KeyA,
+            id: 0,
+        }
+    );
+
+    assert_parse_hotkey!(
+        "ShiftLeft+Space",
+        HotKey {
+            mods: Modifiers::SHIFT_LEFT,
+            key: Code::Space,
+            id: 0,
+        }
+    );
+
+    assert_parse_hotkey!(
+        "AltRight+Enter",
+        HotKey {
+            mods: Modifiers::ALT_RIGHT,
+            key: Code::Enter,
+            id: 0,
+        }
+    );
+
+    // Test META variants (should be converted to SUPER internally)
+    assert_parse_hotkey!(
+        "Meta+KeyA",
+        HotKey {
+            mods: Modifiers::SUPER,  // META converted to SUPER
+            key: Code::KeyA,
+            id: 0,
+        }
+    );
+
+    assert_parse_hotkey!(
+        "MetaLeft+KeyB",
+        HotKey {
+            mods: Modifiers::SUPER_LEFT,  // META_LEFT converted to SUPER_LEFT
+            key: Code::KeyB,
+            id: 0,
+        }
+    );
+
+    assert_parse_hotkey!(
+        "MetaRight+KeyC",
+        HotKey {
+            mods: Modifiers::SUPER_RIGHT,  // META_RIGHT converted to SUPER_RIGHT
+            key: Code::KeyC,
+            id: 0,
+        }
+    );
+
+    // Test complex combinations with specific modifiers
+    assert_parse_hotkey!(
+        "ControlRight+ShiftLeft+ArrowUp",
+        HotKey {
+            mods: Modifiers::CONTROL_RIGHT | Modifiers::SHIFT_LEFT,
+            key: Code::ArrowUp,
+            id: 0,
+        }
+    );
 }
 
 #[test]
@@ -569,8 +736,33 @@ fn test_equality() {
 }
 
 #[test]
-fn test_reproduce_controlright() {
-    let s = "CONTROLRIGHT";
-    let h = s.parse::<HotKey>();
-    assert!(h.is_ok(), "Failed to parse CONTROLRIGHT: {:?}", h.err());
+fn test_left_right_modifier_equality() {
+    // Left and right variants should have different IDs
+    let ctrl_left = HotKey::new(Some(Modifiers::CONTROL_LEFT), Code::KeyA);
+    let ctrl_right = HotKey::new(Some(Modifiers::CONTROL_RIGHT), Code::KeyA);
+    let ctrl_generic = HotKey::new(Some(Modifiers::CONTROL), Code::KeyA);
+
+    assert_ne!(ctrl_left.id(), ctrl_right.id());
+    assert_ne!(ctrl_left.id(), ctrl_generic.id());
+    assert_ne!(ctrl_right.id(), ctrl_generic.id());
+
+    // META should be converted to SUPER
+    let meta = HotKey::new(Some(Modifiers::META), Code::KeyA);
+    let super_mod = HotKey::new(Some(Modifiers::SUPER), Code::KeyA);
+    assert_eq!(meta.id(), super_mod.id());
+
+    // META_LEFT should be converted to SUPER_LEFT
+    let meta_left = HotKey::new(Some(Modifiers::META_LEFT), Code::KeyA);
+    let super_left = HotKey::new(Some(Modifiers::SUPER_LEFT), Code::KeyA);
+    assert_eq!(meta_left.id(), super_left.id());
+}
+
+#[test]
+fn test_into_string_roundtrip() {
+    // Test that into_string produces parseable output
+    let hotkey = HotKey::new(Some(Modifiers::CONTROL_LEFT | Modifiers::SHIFT), Code::KeyA);
+    let s = hotkey.into_string();
+    let parsed = s.parse::<HotKey>().unwrap();
+    assert_eq!(hotkey.mods, parsed.mods);
+    assert_eq!(hotkey.key, parsed.key);
 }

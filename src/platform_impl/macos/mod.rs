@@ -145,7 +145,7 @@ impl GlobalHotKeyManager {
                 .unwrap()
                 .insert(hotkey.id(), HotKeyWrapper { ptr, hotkey });
             Ok(())
-        } else if is_media_key(hotkey.key) {
+        } else if requires_event_tap(hotkey.key) {
             {
                 let mut media_state = self.media_state.lock().unwrap();
                 if !media_state.0.insert(hotkey) {
@@ -216,7 +216,7 @@ impl GlobalHotKeyManager {
     }
 
     pub fn unregister(&self, hotkey: HotKey) -> crate::Result<()> {
-        if is_media_key(hotkey.key) {
+        if requires_event_tap(hotkey.key) {
             let mut media_state = self.media_state.lock().unwrap();
             media_state.0.remove(&hotkey);
             if media_state.0.is_empty() {
@@ -507,13 +507,20 @@ unsafe extern "C" fn media_key_event_callback(
             if guard.0.contains(&hotkey) {
                  let is_pressed_os = CGEventSourceKeyState(kCGEventSourceStateHIDSystemState, scancode);
                  let was_pressed = *guard.1.get(&scancode).unwrap_or(&false);
-                 
+
+                 // macOS FlagsChanged events fire once per modifier key state change, but
+                 // CGEventSourceKeyState may not always reflect the current state accurately
+                 // at the time of the callback (timing issues). To handle this:
+                 // - If the OS reports the key as pressed, trust that.
+                 // - If the OS reports not pressed, toggle based on our tracked state.
+                 // This ensures we correctly detect both press and release events even when
+                 // the OS state query is slightly delayed relative to the event.
                  let is_pressed = if is_pressed_os {
                         true
                  } else {
                         !was_pressed
                  };
-                 
+
                  guard.1.insert(scancode, is_pressed);
                  
                  if is_pressed != was_pressed {
@@ -567,22 +574,24 @@ unsafe extern "C" fn media_key_event_callback(
         // Generate hotkey for matching
         let hotkey = HotKey::new(Some(mods), nx_keytype.into());
 
-        // Prevent Arc been releaded after callback returned
-        let media_hotkeys = &*(user_info as *const Mutex<HashSet<HotKey>>);
+        // Prevent Arc from being released after callback returned
+        let media_state_mutex = &*(user_info as *const Mutex<MediaState>);
 
-        if let Some(media_hotkey) = media_hotkeys.lock().unwrap().get(&hotkey) {
-            let key_flags = data_1 & 0x0000FFFF;
-            let is_pressed: bool = ((key_flags & 0xFF00) >> 8) == 0xA;
-            GlobalHotKeyEvent::send(GlobalHotKeyEvent {
-                id: media_hotkey.id(),
-                state: match is_pressed {
-                    true => crate::HotKeyState::Pressed,
-                    false => crate::HotKeyState::Released,
-                },
-            });
+        if let Ok(guard) = media_state_mutex.lock() {
+            if let Some(media_hotkey) = guard.0.get(&hotkey) {
+                let key_flags = data_1 & 0x0000FFFF;
+                let is_pressed: bool = ((key_flags & 0xFF00) >> 8) == 0xA;
+                GlobalHotKeyEvent::send(GlobalHotKeyEvent {
+                    id: media_hotkey.id(),
+                    state: match is_pressed {
+                        true => crate::HotKeyState::Pressed,
+                        false => crate::HotKeyState::Released,
+                    },
+                });
 
-            // Hotkey was found, return null to stop propagate event
-            return ptr::null();
+                // Hotkey was found, return null to stop propagate event
+                return ptr::null();
+            }
         }
     }
 
@@ -707,7 +716,7 @@ pub fn key_to_scancode(code: Code) -> Option<u32> {
     }
 }
 
-fn is_media_key(code: Code) -> bool {
+fn requires_event_tap(code: Code) -> bool {
     matches!(
         code,
         Code::MediaPlayPause
