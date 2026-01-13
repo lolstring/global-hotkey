@@ -50,6 +50,23 @@ bitflags! {
         const SUPER_RIGHT = 1 << 12;
         const META_LEFT = 1 << 13;
         const META_RIGHT = 1 << 14;
+
+        /// All modifier flags combined, used for matching hotkeys
+        const ALL = Self::SHIFT.bits()
+            | Self::CONTROL.bits()
+            | Self::ALT.bits()
+            | Self::SUPER.bits()
+            | Self::META.bits()
+            | Self::SHIFT_LEFT.bits()
+            | Self::SHIFT_RIGHT.bits()
+            | Self::CONTROL_LEFT.bits()
+            | Self::CONTROL_RIGHT.bits()
+            | Self::ALT_LEFT.bits()
+            | Self::ALT_RIGHT.bits()
+            | Self::SUPER_LEFT.bits()
+            | Self::SUPER_RIGHT.bits()
+            | Self::META_LEFT.bits()
+            | Self::META_RIGHT.bits();
     }
 }
 
@@ -137,11 +154,9 @@ impl HotKey {
 
     /// Returns `true` if this [`Code`] and [`Modifiers`] matches this hotkey.
     pub fn matches(&self, modifiers: impl Borrow<Modifiers>, key: impl Borrow<Code>) -> bool {
-        // Should be a const but const bit_or doesn't work here.
-        let base_mods = Modifiers::SHIFT | Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER | Modifiers::META | Modifiers::SHIFT_LEFT | Modifiers::SHIFT_RIGHT | Modifiers::CONTROL_LEFT | Modifiers::CONTROL_RIGHT | Modifiers::ALT_LEFT | Modifiers::ALT_RIGHT | Modifiers::SUPER_LEFT | Modifiers::SUPER_RIGHT | Modifiers::META_LEFT | Modifiers::META_RIGHT;
         let modifiers = modifiers.borrow();
         let key = key.borrow();
-        self.mods == *modifiers & base_mods && self.key == *key
+        self.mods == *modifiers & Modifiers::ALL && self.key == *key
     }
 
     /// Converts this hotkey into a string.
@@ -313,20 +328,6 @@ fn parse_hotkey(hotkey: &str) -> Result<HotKey, HotKeyParseError> {
 
     Ok(HotKey::new(
         Some(mods),
-        // If key is missing, it might be that the user provided *only* a modifier (e.g. "ControlRight").
-        // Since HotKey requires a Code, this is technically invalid unless we treat the modifier AS the key code??
-        // Wait, the prompt implies "ControlRight" should be valid on its own?
-        // "ControlRight + R" or just "ControlRight"
-        // If it is just "ControlRight", then it is BOTH a modifier AND a key?
-        // Or should we map "ControlRight" to `Code::ControlRight` (if it existed) with no modifiers?
-        // But `Code` doesn't have `ControlRight`. It has `Control`.
-        // Let's rely on standard `Code` enum.
-        
-        // Actually, the error happens because parsing flow assumes at least one non-modifier key.
-        // But for "CONTROLRIGHT", it matches a modifier case, so `key` remains `None`.
-        // Then `key.ok_or_else` fails.
-        // We probably don't support modifier-only hotkeys in this structure because `HotKey` struct enforces `key: Code`.
-    
         key.ok_or_else(|| HotKeyParseError::InvalidFormat(hotkey.to_string()))?,
     ))
 }

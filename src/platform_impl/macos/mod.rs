@@ -26,15 +26,19 @@ use self::ffi::{
     CFRunLoopSourceRef, EventHandlerCallRef, EventHandlerRef, EventHotKeyID, EventHotKeyRef,
     EventRef, EventTypeSpec, GetApplicationEventTarget, GetEventKind, GetEventParameter,
     InstallEventHandler, OSStatus, RegisterEventHotKey, RemoveEventHandler, UnregisterEventHotKey,
-    CGEventSourceKeyState, kCGEventSourceStateCombinedSessionState, kCGEventSourceStateHIDSystemState, kVK_Command, kVK_Shift,
-    kVK_CapsLock, kVK_Option, kVK_Control, kVK_RightShift, kVK_RightOption, kVK_RightControl,
-    kVK_RightCommand, CGEventGetFlags, CGEventGetIntegerValueField, kCGKeyboardEventKeycode,
-    kCGEventFlagMaskShift, kCGEventFlagMaskControl, kCGEventFlagMaskAlternate, kCGEventFlagMaskCommand,
+    CGEventSourceKeyState, kCGEventSourceStateCombinedSessionState, kCGEventSourceStateHIDSystemState,
+    kVK_Command, kVK_Shift, kVK_CapsLock, kVK_Option, kVK_Control, kVK_RightShift, kVK_RightOption,
+    kVK_RightControl, kVK_RightCommand, CGEventGetFlags, CGEventGetIntegerValueField,
+    kCGKeyboardEventKeycode, kCGEventFlagMaskShift, kCGEventFlagMaskControl,
+    kCGEventFlagMaskAlternate, kCGEventFlagMaskCommand,
 };
 
 mod ffi;
 
 type MediaState = (HashSet<HotKey>, HashMap<u16, bool>);
+
+/// Signature for hotkey events ("htrs" as u32)
+const HOTKEY_SIGNATURE: u32 = 0x68747273;
 
 pub struct GlobalHotKeyManager {
     event_handler_ptr: EventHandlerRef,
@@ -42,6 +46,8 @@ pub struct GlobalHotKeyManager {
     event_tap: Mutex<Option<CFMachPortRef>>,
     event_tap_source: Mutex<Option<CFRunLoopSourceRef>>,
     media_state: Arc<Mutex<MediaState>>,
+    /// Raw pointer passed to CGEventTapCreate, needed to reclaim Arc on cleanup
+    event_tap_user_info: Mutex<Option<*const c_void>>,
 }
 
 unsafe impl Send for GlobalHotKeyManager {}
@@ -84,6 +90,7 @@ impl GlobalHotKeyManager {
             event_tap: Mutex::new(None),
             event_tap_source: Mutex::new(None),
             media_state: Arc::new(Mutex::new((HashSet::new(), HashMap::new()))),
+            event_tap_user_info: Mutex::new(None),
         })
     }
 
@@ -106,17 +113,7 @@ impl GlobalHotKeyManager {
             
             let hotkey_id = EventHotKeyID {
                 id: hotkey.id(),
-                signature: {
-                    let mut res: u32 = 0;
-                    // can't find a resource for "htrs" so we construct it manually
-                    // the construction method below is taken from https://github.com/soffes/HotKey/blob/c13662730cb5bc28de4a799854bbb018a90649bf/Sources/HotKey/HotKeysController.swift#L27
-                    // and confirmed by applying the same method to `kEventParamDragRef` which is equal to `drag` in C
-                    // and converted to `1685217639` by rust-bindgen.
-                    for c in "htrs".chars() {
-                        res = (res << 8) + c as u32;
-                    }
-                    res
-                },
+                signature: HOTKEY_SIGNATURE,
             };
 
             let ptr = unsafe {
@@ -170,13 +167,7 @@ impl GlobalHotKeyManager {
                      
                      let hotkey_id = EventHotKeyID {
                         id: hotkey.id(),
-                        signature: {
-                            let mut res: u32 = 0;
-                            for c in "htrs".chars() {
-                                res = (res << 8) + c as u32;
-                            }
-                            res
-                        },
+                        signature: HOTKEY_SIGNATURE,
                     };
         
                     let ptr = unsafe {
@@ -258,6 +249,7 @@ impl GlobalHotKeyManager {
     fn start_watching_media_keys(&self) -> crate::Result<()> {
         let mut event_tap = self.event_tap.lock().unwrap();
         let mut event_tap_source = self.event_tap_source.lock().unwrap();
+        let mut event_tap_user_info = self.event_tap_user_info.lock().unwrap();
 
         if event_tap.is_some() || event_tap_source.is_some() {
             return Ok(());
@@ -266,25 +258,32 @@ impl GlobalHotKeyManager {
         unsafe {
             let event_mask: CGEventMask = CGEventMaskBit!(CGEventType::SystemDefined)
                 | CGEventMaskBit!(CGEventType::FlagsChanged);
+            let user_info = Arc::into_raw(self.media_state.clone()) as *const c_void;
             let tap = CGEventTapCreate(
                 CGEventTapLocation::Session,
                 CGEventTapPlacement::HeadInsertEventTap,
                 CGEventTapOptions::Default,
                 event_mask,
                 media_key_event_callback,
-                Arc::into_raw(self.media_state.clone()) as *const c_void,
+                user_info,
             );
             if tap.is_null() {
+                // Reclaim the Arc since event tap creation failed
+                let _ = Arc::from_raw(user_info as *const Mutex<MediaState>);
                 return Err(crate::Error::FailedToWatchMediaKeyEvent);
             }
             *event_tap = Some(tap);
+            *event_tap_user_info = Some(user_info);
 
             let loop_source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0);
             if loop_source.is_null() {
-                // cleanup event_tap
+                // cleanup event_tap and reclaim Arc
                 CFMachPortInvalidate(tap);
                 CFRelease(tap as *const c_void);
                 *event_tap = None;
+                if let Some(ptr) = event_tap_user_info.take() {
+                    let _ = Arc::from_raw(ptr as *const Mutex<MediaState>);
+                }
 
                 return Err(crate::Error::FailedToWatchMediaKeyEvent);
             }
@@ -308,6 +307,10 @@ impl GlobalHotKeyManager {
             if let Some(event_tap) = self.event_tap.lock().unwrap().take() {
                 CFMachPortInvalidate(event_tap);
                 CFRelease(event_tap as *const c_void);
+            }
+            // Reclaim the Arc to prevent memory leak
+            if let Some(user_info) = self.event_tap_user_info.lock().unwrap().take() {
+                let _ = Arc::from_raw(user_info as *const Mutex<MediaState>);
             }
         }
     }
@@ -475,6 +478,7 @@ unsafe extern "C" fn media_key_event_callback(
             _ => return event,
         };
         
+        // Get modifier flags from the event itself (more reliable than querying key state)
         let flags = CGEventGetFlags(event);
         let mut mods = Modifiers::empty();
         if (flags & kCGEventFlagMaskShift) != 0 {
@@ -489,13 +493,15 @@ unsafe extern "C" fn media_key_event_callback(
         if (flags & kCGEventFlagMaskCommand) != 0 {
             mods |= Modifiers::META;
         }
-        
+
+        // Remove the modifier flag for the key that triggered this event,
+        // since it's the "key" being pressed, not a modifier for another key.
         match code {
-             Code::ShiftLeft | Code::ShiftRight => mods.remove(Modifiers::SHIFT),
-             Code::ControlLeft | Code::ControlRight => mods.remove(Modifiers::CONTROL),
-             Code::AltLeft | Code::AltRight => mods.remove(Modifiers::ALT),
-             Code::MetaLeft | Code::MetaRight => mods.remove(Modifiers::META),
-             _ => {}
+            Code::ShiftLeft | Code::ShiftRight => mods.remove(Modifiers::SHIFT),
+            Code::ControlLeft | Code::ControlRight => mods.remove(Modifiers::CONTROL),
+            Code::AltLeft | Code::AltRight => mods.remove(Modifiers::ALT),
+            Code::MetaLeft | Code::MetaRight => mods.remove(Modifiers::META),
+            _ => {}
         }
         
         let hotkey = HotKey::new(Some(mods), code);
