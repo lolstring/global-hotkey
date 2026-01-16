@@ -28,14 +28,13 @@ use self::ffi::{
     InstallEventHandler, OSStatus, RegisterEventHotKey, RemoveEventHandler, UnregisterEventHotKey,
     CGEventSourceKeyState, kCGEventSourceStateCombinedSessionState, kCGEventSourceStateHIDSystemState,
     kVK_Command, kVK_Shift, kVK_CapsLock, kVK_Option, kVK_Control, kVK_RightShift, kVK_RightOption,
-    kVK_RightControl, kVK_RightCommand, kVK_Function, CGEventGetFlags, CGEventGetIntegerValueField,
-    kCGKeyboardEventKeycode, kCGEventFlagMaskShift, kCGEventFlagMaskControl,
-    kCGEventFlagMaskAlternate, kCGEventFlagMaskCommand,
+    kVK_RightControl, kVK_RightCommand, CGEventGetIntegerValueField, kCGKeyboardEventKeycode,
 };
 
 mod ffi;
 
-type MediaState = (HashSet<HotKey>, HashMap<u16, bool>);
+/// (registered_hotkeys, active_presses: scancode -> hotkey_id that was matched on press)
+type MediaState = (HashSet<HotKey>, HashMap<u16, u32>);
 
 /// Signature for hotkey events ("htrs" as u32)
 const HOTKEY_SIGNATURE: u32 = 0x68747273;
@@ -479,71 +478,164 @@ unsafe extern "C" fn media_key_event_callback(
             _ => return event,
         };
         
-        // Get modifier flags from the event itself (more reliable than querying key state)
-        let flags = CGEventGetFlags(event);
-        let mut mods = Modifiers::empty();
-        if (flags & kCGEventFlagMaskShift) != 0 {
-            mods |= Modifiers::SHIFT;
-        }
-        if (flags & kCGEventFlagMaskControl) != 0 {
-            mods |= Modifiers::CONTROL;
-        }
-        if (flags & kCGEventFlagMaskAlternate) != 0 {
-            mods |= Modifiers::ALT;
-        }
-        if (flags & kCGEventFlagMaskCommand) != 0 {
-            mods |= Modifiers::META;
-        }
+        // Query current state of all modifier keys
+        // These are the "other" modifiers (not the key that triggered this event)
+        let shift_left_pressed = CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_Shift);
+        let shift_right_pressed = CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_RightShift);
+        let control_left_pressed = CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_Control);
+        let control_right_pressed = CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_RightControl);
+        let alt_left_pressed = CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_Option);
+        let alt_right_pressed = CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_RightOption);
+        let meta_left_pressed = CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_Command);
+        let meta_right_pressed = CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, kVK_RightCommand);
 
-        // Remove the modifier flag for the key that triggered this event,
-        // since it's the "key" being pressed, not a modifier for another key.
-        match code {
-            Code::ShiftLeft | Code::ShiftRight => mods.remove(Modifiers::SHIFT),
-            Code::ControlLeft | Code::ControlRight => mods.remove(Modifiers::CONTROL),
-            Code::AltLeft | Code::AltRight => mods.remove(Modifiers::ALT),
-            Code::MetaLeft | Code::MetaRight => mods.remove(Modifiers::META),
-            _ => {}
-        }
-        
-        let hotkey = HotKey::new(Some(mods), code);
-        
+        // For checking modifiers, exclude the key that triggered this event
+        // since it's the "key" being pressed, not a modifier for another key
+        let (shift_left, shift_right) = match code {
+            Code::ShiftLeft => (false, shift_right_pressed),
+            Code::ShiftRight => (shift_left_pressed, false),
+            _ => (shift_left_pressed, shift_right_pressed),
+        };
+        let (control_left, control_right) = match code {
+            Code::ControlLeft => (false, control_right_pressed),
+            Code::ControlRight => (control_left_pressed, false),
+            _ => (control_left_pressed, control_right_pressed),
+        };
+        let (alt_left, alt_right) = match code {
+            Code::AltLeft => (false, alt_right_pressed),
+            Code::AltRight => (alt_left_pressed, false),
+            _ => (alt_left_pressed, alt_right_pressed),
+        };
+        let (meta_left, meta_right) = match code {
+            Code::MetaLeft => (false, meta_right_pressed),
+            Code::MetaRight => (meta_left_pressed, false),
+            _ => (meta_left_pressed, meta_right_pressed),
+        };
+
         let media_state_mutex = &*(user_info as *const Mutex<MediaState>);
 
         let lock_result = media_state_mutex.lock();
         if let Ok(mut guard) = lock_result {
-            if guard.0.contains(&hotkey) {
-                 let is_pressed_os = CGEventSourceKeyState(kCGEventSourceStateHIDSystemState, scancode);
-                 let was_pressed = *guard.1.get(&scancode).unwrap_or(&false);
+            // Check if this key was already pressed (we need to send release for the SAME hotkey)
+            let previously_active_hotkey_id = guard.1.get(&scancode).copied();
 
-                 // macOS FlagsChanged events fire once per modifier key state change, but
-                 // CGEventSourceKeyState may not always reflect the current state accurately
-                 // at the time of the callback (timing issues). To handle this:
-                 // - If the OS reports the key as pressed, trust that.
-                 // - If the OS reports not pressed, toggle based on our tracked state.
-                 // This ensures we correctly detect both press and release events even when
-                 // the OS state query is slightly delayed relative to the event.
-                 let is_pressed = if is_pressed_os {
-                        true
-                 } else {
-                        !was_pressed
-                 };
+            // Determine if the key is currently pressed
+            let is_pressed_os = CGEventSourceKeyState(kCGEventSourceStateHIDSystemState, scancode);
+            let was_pressed = previously_active_hotkey_id.is_some();
 
-                 guard.1.insert(scancode, is_pressed);
-                 
-                 if is_pressed != was_pressed {
+            // macOS FlagsChanged events fire once per modifier key state change, but
+            // CGEventSourceKeyState may not always reflect the current state accurately
+            // at the time of the callback (timing issues). To handle this:
+            // - If the OS reports the key as pressed, trust that.
+            // - If the OS reports not pressed, toggle based on our tracked state.
+            let is_pressed = if is_pressed_os {
+                true
+            } else {
+                !was_pressed
+            };
+
+            // No state change, nothing to do
+            if is_pressed == was_pressed {
+                return event;
+            }
+
+            if is_pressed {
+                // Key was just pressed - find matching hotkey by checking modifier satisfaction
+                let matching_hotkey = guard.0.iter().find(|registered| {
+                    // Code must match
+                    if registered.key != code {
+                        return false;
+                    }
+
+                    let required = registered.mods;
+
+                    // Check each required modifier is satisfied
+                    // Generic modifiers (SHIFT, CONTROL, etc.) are satisfied if either left or right is pressed
+                    // Side-specific modifiers require that specific key to be pressed
+
+                    // Shift checks
+                    if required.contains(Modifiers::SHIFT_LEFT) && !shift_left {
+                        return false;
+                    }
+                    if required.contains(Modifiers::SHIFT_RIGHT) && !shift_right {
+                        return false;
+                    }
+                    if required.contains(Modifiers::SHIFT)
+                        && !required.intersects(Modifiers::SHIFT_LEFT | Modifiers::SHIFT_RIGHT)
+                        && !(shift_left || shift_right)
+                    {
+                        return false;
+                    }
+
+                    // Control checks
+                    if required.contains(Modifiers::CONTROL_LEFT) && !control_left {
+                        return false;
+                    }
+                    if required.contains(Modifiers::CONTROL_RIGHT) && !control_right {
+                        return false;
+                    }
+                    if required.contains(Modifiers::CONTROL)
+                        && !required.intersects(Modifiers::CONTROL_LEFT | Modifiers::CONTROL_RIGHT)
+                        && !(control_left || control_right)
+                    {
+                        return false;
+                    }
+
+                    // Alt checks
+                    if required.contains(Modifiers::ALT_LEFT) && !alt_left {
+                        return false;
+                    }
+                    if required.contains(Modifiers::ALT_RIGHT) && !alt_right {
+                        return false;
+                    }
+                    if required.contains(Modifiers::ALT)
+                        && !required.intersects(Modifiers::ALT_LEFT | Modifiers::ALT_RIGHT)
+                        && !(alt_left || alt_right)
+                    {
+                        return false;
+                    }
+
+                    // Meta/Super checks
+                    if required.contains(Modifiers::SUPER_LEFT) && !meta_left {
+                        return false;
+                    }
+                    if required.contains(Modifiers::SUPER_RIGHT) && !meta_right {
+                        return false;
+                    }
+                    if required.intersects(Modifiers::META | Modifiers::SUPER)
+                        && !required.intersects(Modifiers::SUPER_LEFT | Modifiers::SUPER_RIGHT | Modifiers::META_LEFT | Modifiers::META_RIGHT)
+                        && !(meta_left || meta_right)
+                    {
+                        return false;
+                    }
+
+                    true
+                }).copied();
+
+                if let Some(hotkey) = matching_hotkey {
+                    // Store which hotkey was matched for this scancode
+                    guard.1.insert(scancode, hotkey.id());
+
                     GlobalHotKeyEvent::send(GlobalHotKeyEvent {
                         id: hotkey.id(),
-                        state: match is_pressed {
-                            true => crate::HotKeyState::Pressed,
-                            false => crate::HotKeyState::Released,
-                        },
+                        state: crate::HotKeyState::Pressed,
                     });
-                 }
-    
-                return event; 
+                }
+            } else {
+                // Key was just released - use the stored hotkey ID (don't re-match modifiers)
+                if let Some(hotkey_id) = previously_active_hotkey_id {
+                    guard.1.remove(&scancode);
+
+                    GlobalHotKeyEvent::send(GlobalHotKeyEvent {
+                        id: hotkey_id,
+                        state: crate::HotKeyState::Released,
+                    });
+                }
             }
+
+            return event;
         }
-        
+
         return event;
 
     }
