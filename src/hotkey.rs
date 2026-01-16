@@ -594,6 +594,25 @@ fn test_parse_hotkey() {
         }
     );
 
+    // Test the user's specific cases
+    assert_parse_hotkey!(
+        "ShiftLeft+ControlLeft",
+        HotKey {
+            mods: Modifiers::SHIFT_LEFT,
+            key: Code::ControlLeft,
+            id: 0,
+        }
+    );
+
+    assert_parse_hotkey!(
+        "ShiftRight+ControlRight",
+        HotKey {
+            mods: Modifiers::SHIFT_RIGHT,
+            key: Code::ControlRight,
+            id: 0,
+        }
+    );
+
     // Test standalone modifier keys as the main key (e.g., for standalone modifier hotkeys)
     assert_parse_hotkey!(
         "ControlRight",

@@ -33,15 +33,16 @@ fn new() -> (Example, Task<Message>) {
     // Define hotkeys to register
     let hotkeys = vec![
         // Individual Modifier Keys (as triggers)
-        ("Control Left", HotKey::new(None, Code::ControlLeft)),
-        ("Control Right", HotKey::new(None, Code::ControlRight)),
+        // ("Control Left", HotKey::new(None, Code::ControlLeft)),
+        // ("Control Right", HotKey::new(None, Code::ControlRight)),
         // ("Shift Left", HotKey::new(None, Code::ShiftLeft)),
-        ("Shift Right", HotKey::new(None, Code::ShiftRight)),
+        // ("Shift Right", HotKey::new(None, Code::ShiftRight)),
         ("Alt Left", HotKey::new(None, Code::AltLeft)),
         ("Alt Right", HotKey::new(None, Code::AltRight)),
         // ("Meta Left", HotKey::new(None, Code::MetaLeft)),
         ("Meta Right", HotKey::new(None, Code::MetaRight)),
-        ("Fn", HotKey::new(None, Code::Fn)),
+        // ("Fn", HotKey::new(None, Code::Fn)),
+        // ("Shift Left + Control + Fn", HotKey::new(Some(Modifiers::SHIFT_LEFT | Modifiers::CONTROL_LEFT), Code::Fn)),
 
         // Simple Combinations
         ("Control + A", HotKey::new(Some(Modifiers::CONTROL), Code::KeyA)),
@@ -56,8 +57,9 @@ fn new() -> (Example, Task<Message>) {
         // Complex Combinations
         ("Control + Shift + Enter", HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Enter)),
         ("String Key + MetaLeft", "MetaLeft".parse().unwrap()),
-        ("String + ShiftLeft", "ShiftLeft".parse().unwrap()),
-        // ("String + Function", "Fn".parse().unwrap()),
+        ("String + ShiftLeft + ControlLeft", "ShiftLeft+ControlLeft".parse().unwrap()),
+        ("String + Function", "Fn".parse().unwrap()),
+        ("String + ShiftRight + ControlRight", "ShiftRight+ControlRight".parse().unwrap()),
     ];
 
     println!("Registering hotkeys...");
