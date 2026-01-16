@@ -239,29 +239,28 @@ fn parse_hotkey(hotkey: &str) -> Result<HotKey, HotKeyParseError> {
     let tokens = hotkey.split('+').collect::<Vec<&str>>();
 
     let mut mods = Modifiers::empty();
-    let mut key = None;
+    let key;
 
     match tokens.len() {
         1 => {
-            key = Some(parse_key(tokens[0])?);
+            key = parse_key(tokens[0])?;
         }
-        // modifiers and key comobo hotkey
+        // modifiers and key combo hotkey
         _ => {
-            for raw in tokens {
+            // Process all tokens except the last as potential modifiers
+            // The last token is always treated as the main key
+            let (modifier_tokens, key_token) = tokens.split_at(tokens.len() - 1);
+            let key_token = key_token[0].trim();
+
+            if key_token.is_empty() {
+                return Err(HotKeyParseError::EmptyToken(hotkey.to_string()));
+            }
+
+            for raw in modifier_tokens {
                 let token = raw.trim();
 
                 if token.is_empty() {
                     return Err(HotKeyParseError::EmptyToken(hotkey.to_string()));
-                }
-
-                if key.is_some() {
-                    // At this point we have parsed the modifiers and a main key, so by reaching
-                    // this code, the function either received more than one main key or
-                    //  the hotkey is not in the right order
-                    // examples:
-                    // 1. "Ctrl+Shift+C+A" => only one main key should be allowd.
-                    // 2. "Ctrl+C+Shift" => wrong order
-                    return Err(HotKeyParseError::InvalidFormat(hotkey.to_string()));
                 }
 
                 match token.to_uppercase().as_str() {
@@ -319,17 +318,19 @@ fn parse_hotkey(hotkey: &str) -> Result<HotKey, HotKeyParseError> {
                         mods |= Modifiers::CONTROL;
                     }
                     _ => {
-                        key = Some(parse_key(token)?);
+                        // Non-modifier token before the last token is an error
+                        // e.g., "KeyA+Ctrl+KeyB" - KeyA is not a valid modifier
+                        return Err(HotKeyParseError::InvalidFormat(hotkey.to_string()));
                     }
                 }
             }
+
+            // Parse the last token as the main key
+            key = parse_key(key_token)?;
         }
     }
 
-    Ok(HotKey::new(
-        Some(mods),
-        key.ok_or_else(|| HotKeyParseError::InvalidFormat(hotkey.to_string()))?,
-    ))
+    Ok(HotKey::new(Some(mods), key))
 }
 
 fn parse_key(key: &str) -> Result<Code, HotKeyParseError> {
@@ -563,11 +564,35 @@ fn test_parse_hotkey() {
         }
     );
 
-    // Ensure that if it is just multiple modifiers, we do not panic.
-    // This would be a regression if this happened.
-    if HotKey::from_str("Shift+Ctrl").is_ok() {
-        panic!("This is not a valid hotkey");
-    }
+    // Test modifier as main key with other modifiers
+    // "Shift+Ctrl" should parse as Shift modifier + ControlLeft key
+    assert_parse_hotkey!(
+        "Shift+Ctrl",
+        HotKey {
+            mods: Modifiers::SHIFT,
+            key: Code::ControlLeft,
+            id: 0,
+        }
+    );
+
+    // Test more modifier-as-key combinations
+    assert_parse_hotkey!(
+        "Ctrl+ShiftLeft",
+        HotKey {
+            mods: Modifiers::CONTROL,
+            key: Code::ShiftLeft,
+            id: 0,
+        }
+    );
+
+    assert_parse_hotkey!(
+        "Alt+Ctrl+ShiftRight",
+        HotKey {
+            mods: Modifiers::ALT | Modifiers::CONTROL,
+            key: Code::ShiftRight,
+            id: 0,
+        }
+    );
 
     // Test standalone modifier keys as the main key (e.g., for standalone modifier hotkeys)
     assert_parse_hotkey!(

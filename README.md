@@ -70,6 +70,64 @@ let hotkey = HotKey::new(Some(Modifiers::SHIFT), Code::KeyD);
 manager.register(hotkey);
 ```
 
+## Parsing Hotkeys from Strings
+
+You can also create hotkeys by parsing strings:
+
+```rs
+use global_hotkey::hotkey::HotKey;
+
+let hotkey: HotKey = "Ctrl+Shift+KeyA".parse().unwrap();
+let hotkey: HotKey = "CommandOrControl+C".parse().unwrap();
+let hotkey: HotKey = "Ctrl+ShiftLeft".parse().unwrap(); // Modifier as main key
+```
+
+### String Format
+
+**Format:** `modifier+modifier+...+key`
+
+**Rules:**
+- Tokens separated by `+`
+- Case insensitive (`ctrl+a` = `CTRL+A`)
+- Whitespace around tokens is trimmed
+- **Last token is always the main key**
+- All tokens before the last must be valid modifiers
+
+**Allowed:**
+- Single key: `KeyA`, `ShiftLeft`, `Fn`
+- Modifiers + key: `Ctrl+Shift+KeyA`
+- Modifier as main key: `Ctrl+ShiftLeft`, `Shift+Ctrl`
+
+**Not Allowed:**
+- Empty tokens: `Ctrl++A`
+- Non-modifier before last token: `KeyA+Ctrl`
+- Unknown key names: `Ctrl+Foo`
+
+### Special Keys
+
+| Category | Keys | Notes |
+|----------|------|-------|
+| **Fn** | `Fn`, `Function` | macOS only, requires accessibility permissions |
+| **Media** | `MediaPlayPause`, `MediaTrackNext`, `MediaTrackPrevious`, `MediaPlay`, `MediaPause`, `MediaStop` | May require event tap on macOS |
+| **Volume** | `VolumeUp`, `VolumeDown`, `VolumeMute` | Also: `AudioVolumeUp`, etc. |
+| **Standalone Modifiers** | `ShiftLeft`, `ShiftRight`, `ControlLeft`, `ControlRight`, `AltLeft`, `AltRight`, `MetaLeft`, `MetaRight` | Can be used as main key |
+
+### Modifier Aliases
+
+| Modifier | Aliases |
+|----------|---------|
+| `Alt` | `Option` |
+| `Control` | `Ctrl` |
+| `Super` | `Command`, `Cmd`, `Meta` |
+| `CmdOrCtrl` | `CommandOrControl` — Super on macOS, Control elsewhere |
+
+### Side-Specific Modifiers
+
+- `ShiftLeft`, `ShiftRight`
+- `ControlLeft` / `CtrlLeft`, `ControlRight` / `CtrlRight`
+- `AltLeft` / `OptionLeft`, `AltRight` / `OptionRight`
+- `SuperLeft` / `CommandLeft` / `CmdLeft`, `SuperRight` / `CommandRight` / `CmdRight`
+
 ## Processing global hotkey events
 
 You can also listen for the menu events using `GlobalHotKeyEvent::receiver` to get events for the hotkey pressed events.
